@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --cyan: #00FFD1;
+  --cyan-dim: #00b89a;
+  --green: #39FF14;
+  --purple: #9D5CFF;
+  --orange: #FF9149;
+  --red: #FF4D6A;
+  --bg-primary: #0D0E1A;
+  --bg-card: #141526;
+  --bg-card-hover: #1A1C30;
+  --border: #2A2D45;
+  --text-primary: #E8E9F0;
+  --text-secondary: #8B8FA3;
+}
+
+[data-hydration-error] {
+  display: none !important;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 3px;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(0, 255, 209, 0.2); }
+  50% { box-shadow: 0 0 20px rgba(0, 255, 209, 0.4); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.4s ease-out;
+}
+
+.glow-cyan {
+  box-shadow: 0 0 15px rgba(0, 255, 209, 0.15);
+}
+
+.terminal-font {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+}
+
+.log-window {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-dot.online {
+  background-color: var(--green);
+  box-shadow: 0 0 8px rgba(57, 255, 20, 0.5);
+}
+
+.status-dot.offline {
+  background-color: var(--red);
+  box-shadow: 0 0 8px rgba(255, 77, 106, 0.5);
+}
+
+.status-dot.warning {
+  background-color: var(--orange);
+  box-shadow: 0 0 8px rgba(255, 145, 73, 0.5);
+}
