@@ -1,0 +1,32 @@
+generator client {
+    provider      = "prisma-client-js"
+    binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
+}
+
+datasource db {
+    provider = "sqlite"
+    url      = env("DATABASE_URL")
+}
+
+model BenchmarkRun {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  model       String
+  pp          Int      @default(512)
+  tg          Int      @default(128)
+  concurrency Int      @default(1)
+  runs        Int      @default(3)
+  status      String   @default("pending") // pending, running, completed, failed, stopped
+  tsTotal     Float?   // tokens/sec total
+  tsReq       Float?   // tokens/sec per request
+  peakTs      Float?   // peak tokens/sec
+  ttfr        Float?   // time to first response (ms)
+  estPpt      Float?   // estimated prompt processing time (ms)
+  duration    Float?   // total run duration in seconds
+  logOutput   String?  // raw log output
+  notes       String?
+
+  @@index([createdAt])
+  @@index([model])
+  @@index([status])
+}
