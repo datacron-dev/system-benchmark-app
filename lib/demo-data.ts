@@ -1,4 +1,4 @@
-import type { GpuMetrics, SystemMetrics, OllamaStatus } from './types';
+import type { GpuMetrics, SystemMetrics, InferenceServerStatus } from './types';
 
 // Simulated GPU metrics for demo mode
 export function generateGpuMetrics(prev?: GpuMetrics): GpuMetrics {
@@ -54,7 +54,8 @@ export function generateSystemMetrics(prev?: SystemMetrics): SystemMetrics {
   };
 }
 
-export const DEMO_OLLAMA_STATUS: OllamaStatus = {
+export const DEMO_INFERENCE_SERVER_STATUS: InferenceServerStatus = {
+  server: 'ollama',
   running: true,
   loadedModel: 'llama3.1:8b-instruct-q4_K_M',
   processor: 'GPU',

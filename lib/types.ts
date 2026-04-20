@@ -34,7 +34,10 @@ export interface SystemMetrics {
   timestamp: number;
 }
 
-export interface OllamaStatus {
+export type InferenceServerType = 'ollama' | 'lmstudio';
+
+export interface InferenceServerStatus {
+  server: InferenceServerType | null;
   running: boolean;
   loadedModel: string | null;
   processor: string | null;

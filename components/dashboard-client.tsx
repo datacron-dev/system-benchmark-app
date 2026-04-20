@@ -8,11 +8,11 @@ import {
   Monitor, BookOpen, Rocket, RefreshCw, Info, Microchip
 } from 'lucide-react';
 import type {
-  GpuMetrics, SystemMetrics, OllamaStatus, BenchmarkResult, BenchmarkParams
+  GpuMetrics, SystemMetrics, InferenceServerStatus, InferenceServerType, BenchmarkResult, BenchmarkParams
 } from '@/lib/types';
 import { LOAD_PRESETS } from '@/lib/types';
 import GpuMonitorPanel from './panels/gpu-monitor-panel';
-import OllamaStatusPanel from './panels/ollama-status-panel';
+import InferenceServerPanel from './panels/inference-server-panel';
 import BenchmarkRunnerPanel from './panels/benchmark-runner-panel';
 import ResultsPanel from './panels/results-panel';
 import SystemStatsPanel from './panels/system-stats-panel';
@@ -26,7 +26,8 @@ const NAV_ITEMS: { id: ActivePage; label: string; icon: React.ElementType }[] = 
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
-const DEFAULT_OLLAMA: OllamaStatus = {
+const DEFAULT_INFERENCE: InferenceServerStatus = {
+  server: null,
   running: false,
   loadedModel: null,
   processor: null,
@@ -34,12 +35,20 @@ const DEFAULT_OLLAMA: OllamaStatus = {
   availableModels: [],
 };
 
+const SERVER_CONFIG: Record<InferenceServerType, { label: string; baseUrl: string; port: number }> = {
+  ollama: { label: 'Ollama', baseUrl: 'http://localhost:11434', port: 11434 },
+  lmstudio: { label: 'LM Studio', baseUrl: 'http://localhost:1234', port: 1234 },
+};
+
 export default function DashboardClient() {
   const [activePage, setActivePage] = useState<ActivePage>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [gpuHistory, setGpuHistory] = useState<GpuMetrics[]>([]);
   const [systemHistory, setSystemHistory] = useState<SystemMetrics[]>([]);
-  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>(DEFAULT_OLLAMA);
+  const [serverType, setServerType] = useState<InferenceServerType | null>(
+    (typeof window !== 'undefined' && localStorage.getItem('benchmark-server')) || 'ollama'
+  );
+  const [inferenceStatus, setInferenceStatus] = useState<InferenceServerStatus>(DEFAULT_INFERENCE);
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
   const [benchmarkLog, setBenchmarkLog] = useState<string[]>([]);
   const [currentResult, setCurrentResult] = useState<Partial<BenchmarkResult> | null>(null);
@@ -94,16 +103,16 @@ export default function DashboardClient() {
     return () => { active = false; clearInterval(interval); };
   }, [mounted]);
 
-  // Poll Ollama status (every 5s)
+  // Poll inference server status (every 5s)
   useEffect(() => {
     if (!mounted) return;
     let active = true;
     const poll = async () => {
       try {
-        const res = await fetch('/api/system/ollama');
+        const res = await fetch('/api/inference/server');
         if (res.ok && active) {
           const data = await res.json();
-          setOllamaStatus(data as OllamaStatus);
+          setInferenceStatus(data as InferenceServerStatus);
         }
       } catch {}
     };
@@ -139,7 +148,7 @@ export default function DashboardClient() {
     fetchStats();
   }, [mounted, fetchBenchmarks, fetchStats]);
 
-  // Run benchmark against local Ollama
+  // Run benchmark against local inference server
   const handleRunBenchmark = useCallback(async (params: BenchmarkParams) => {
     setBenchmarkRunning(true);
     setBenchmarkLog([]);
@@ -147,6 +156,9 @@ export default function DashboardClient() {
     stopRef.current = false;
 
     try {
+      const config = SERVER_CONFIG[serverType ?? 'ollama'];
+      const baseUrl = config.baseUrl;
+
       // Create benchmark entry in DB
       const res = await fetch('/api/benchmarks', {
         method: 'POST',
@@ -164,18 +176,18 @@ export default function DashboardClient() {
       addLog(`[INFO] Starting benchmark...`);
       addLog(`[INFO] Model: ${params?.model ?? 'unknown'}`);
       addLog(`[INFO] Parameters: pp=${params?.pp ?? 512} tg=${params?.tg ?? 128} concurrency=${params?.concurrency ?? 1} runs=${params?.runs ?? 3}`);
-      addLog(`[INFO] Target: http://localhost:11434/v1`);
+      addLog(`[INFO] Target: ${baseUrl}`);
       addLog('');
 
-      // Check if Ollama is available
-      let ollamaAvailable = false;
+      // Check if inference server is available
+      let serverAvailable = false;
       try {
-        const check = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(3000) });
-        ollamaAvailable = check.ok;
+        const check = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(3000) });
+        serverAvailable = check.ok;
       } catch {}
 
-      if (!ollamaAvailable) {
-        addLog('[WARN] Ollama is not running at http://localhost:11434');
+      if (!serverAvailable) {
+        addLog(`[WARN] ${config.label} is not running at ${baseUrl}`);
         addLog('[INFO] Running simulated benchmark for demonstration...');
         addLog('');
       }
@@ -192,32 +204,55 @@ export default function DashboardClient() {
 
         addLog(`[RUN ${runIdx + 1}/${params?.runs ?? 3}] Sending ${params?.concurrency ?? 1} concurrent requests...`);
 
-        if (ollamaAvailable) {
-          // Real benchmark: send concurrent requests to Ollama
+        if (serverAvailable) {
           const promises = Array.from({ length: params?.concurrency ?? 1 }, async (_, cIdx) => {
             const reqStart = Date.now();
             let ttfr = 0;
             let tokens = 0;
+            let ts = 0;
 
             try {
-              const resp = await fetch('http://localhost:11434/api/generate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  model: params.model,
-                  prompt: 'Write a detailed explanation of how neural networks work, including backpropagation, gradient descent, and activation functions. '.repeat(Math.max(1, Math.floor((params?.pp ?? 512) / 20))),
-                  stream: false,
-                  options: {
-                    num_predict: params?.tg ?? 128,
-                  },
-                }),
-              });
+              if (serverType === 'lmstudio') {
+                // LM Studio: OpenAI-compatible /v1/chat/completions
+                const prompt = 'Write a detailed explanation of how neural networks work, including backpropagation, gradient descent, and activation functions. '.repeat(Math.max(1, Math.floor((params?.pp ?? 512) / 20)));
+                const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    model: params.model,
+                    messages: [{ role: 'user', content: prompt }],
+                    max_tokens: params?.tg ?? 128,
+                    temperature: 0.7,
+                  }),
+                });
 
-              const data = await resp.json();
-              ttfr = Date.now() - reqStart;
-              tokens = data?.eval_count ?? (params?.tg ?? 128);
-              const evalDuration = data?.eval_duration ?? 1;
-              const ts = tokens / (evalDuration / 1e9);
+                const data = await resp.json();
+                ttfr = Date.now() - reqStart;
+                const generated = data?.choices?.[0]?.text ?? data?.choices?.[0]?.message?.content ?? '';
+                tokens = generated ? generated.split(/\s+/).filter(Boolean).length : (params?.tg ?? 128);
+                const duration = Date.now() - reqStart;
+                ts = duration > 0 ? Math.round((tokens / (duration / 1000)) * 10) / 10 : 0;
+              } else {
+                // Ollama: /api/generate
+                const resp = await fetch(`${baseUrl}/api/generate`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    model: params.model,
+                    prompt: 'Write a detailed explanation of how neural networks work, including backpropagation, gradient descent, and activation functions. '.repeat(Math.max(1, Math.floor((params?.pp ?? 512) / 20))),
+                    stream: false,
+                    options: {
+                      num_predict: params?.tg ?? 128,
+                    },
+                  }),
+                });
+
+                const data = await resp.json();
+                ttfr = Date.now() - reqStart;
+                tokens = data?.eval_count ?? (params?.tg ?? 128);
+                const evalDuration = data?.eval_duration ?? 1;
+                ts = evalDuration > 0 ? Math.round((tokens / (evalDuration / 1e9)) * 10) / 10 : 0;
+              }
 
               addLog(`  Request ${cIdx + 1} complete: ${ts.toFixed(1)} t/s, TTFR: ${ttfr}ms`);
               return { ts, ttfr, tokens };
@@ -306,12 +341,17 @@ export default function DashboardClient() {
     } finally {
       setBenchmarkRunning(false);
     }
-  }, [fetchBenchmarks, fetchStats]);
+  }, [fetchBenchmarks, fetchStats, serverType]);
 
   const handleStopBenchmark = useCallback(() => {
     stopRef.current = true;
     setBenchmarkRunning(false);
     setBenchmarkLog(prev => [...(prev ?? []), '[INFO] Benchmark stopped by user.']);
+  }, []);
+
+  const handleSetServerType = useCallback((type: InferenceServerType) => {
+    setServerType(type);
+    localStorage.setItem('benchmark-server', type ?? 'ollama');
   }, []);
 
   if (!mounted) {
@@ -424,7 +464,7 @@ export default function DashboardClient() {
                 <DashboardPage
                   gpuHistory={gpuHistory}
                   systemHistory={systemHistory}
-                  ollamaStatus={ollamaStatus}
+                  inferenceStatus={inferenceStatus}
                   benchmarkRunning={benchmarkRunning}
                   benchmarkLog={benchmarkLog}
                   currentResult={currentResult}
@@ -453,7 +493,12 @@ export default function DashboardClient() {
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.3 }}
               >
-                <SettingsPage systemHistory={systemHistory} gpuHistory={gpuHistory} />
+                <SettingsPage
+                  systemHistory={systemHistory}
+                  gpuHistory={gpuHistory}
+                  serverType={serverType}
+                  onSetServerType={handleSetServerType}
+                />
               </motion.div>
             )}
           </AnimatePresence>
@@ -465,12 +510,12 @@ export default function DashboardClient() {
 
 // Dashboard page assembles the 6 panels
 function DashboardPage({
-  gpuHistory, systemHistory, ollamaStatus, benchmarkRunning,
+  gpuHistory, systemHistory, inferenceStatus, benchmarkRunning,
   benchmarkLog, currentResult, onRunBenchmark, onStopBenchmark, stats
 }: {
   gpuHistory: GpuMetrics[];
   systemHistory: SystemMetrics[];
-  ollamaStatus: OllamaStatus;
+  inferenceStatus: InferenceServerStatus;
   benchmarkRunning: boolean;
   benchmarkLog: string[];
   currentResult: Partial<BenchmarkResult> | null;
@@ -488,21 +533,21 @@ function DashboardPage({
         <StatCard icon={Activity} label="Avg TTFR" value={stats?.avgTtfr ?? 0} color="#9D5CFF" suffix=" ms" />
       </div>
 
-      {/* Row 1: GPU + System + Ollama */}
+      {/* Row 1: GPU + System + Inference Server */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2">
           <GpuMonitorPanel history={gpuHistory} />
         </div>
         <div className="space-y-4">
           <SystemStatsPanel history={systemHistory} />
-          <OllamaStatusPanel status={ollamaStatus} />
+          <InferenceServerPanel status={inferenceStatus} />
         </div>
       </div>
 
       {/* Row 2: Benchmark Runner + Results */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <BenchmarkRunnerPanel
-          models={ollamaStatus?.availableModels ?? []}
+          models={inferenceStatus?.availableModels ?? []}
           running={benchmarkRunning}
           logLines={benchmarkLog}
           onRun={onRunBenchmark}
@@ -530,13 +575,53 @@ function StatCard({ icon: Icon, label, value, color, suffix }: {
   );
 }
 
-function SettingsPage({ systemHistory, gpuHistory }: { systemHistory: SystemMetrics[]; gpuHistory: GpuMetrics[] }) {
+function SettingsPage({
+  systemHistory, gpuHistory, serverType, onSetServerType
+}: {
+  systemHistory: SystemMetrics[];
+  gpuHistory: GpuMetrics[];
+  serverType: InferenceServerType;
+  onSetServerType: (type: InferenceServerType | null) => void;
+}) {
   const latest = systemHistory?.[systemHistory.length - 1];
   const latestGpu = gpuHistory?.[gpuHistory.length - 1];
   const sysInfo = latestGpu?.systemInfo;
 
   return (
     <div className="max-w-3xl space-y-6">
+      {/* Inference Server Settings */}
+      <div className="bg-[#141526] rounded-xl p-6 border border-[#2A2D45]">
+        <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <Server className="w-5 h-5 text-[#9D5CFF]" />
+          Inference Server
+        </h3>
+        <div className="space-y-4">
+          <div>
+            <label className="text-[11px] uppercase tracking-wider text-[#8B8FA3] mb-2 block">Server Type</label>
+            <div className="flex gap-2">
+              {(['ollama', 'lmstudio'] as const).map((type) => {
+                const cfg = SERVER_CONFIG[type];
+                const isActive = serverType === type;
+                return (
+                  <button
+                    key={type}
+                    onClick={() => onSetServerType(type)}
+                    className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-all border ${
+                      isActive
+                        ? 'bg-[#00FFD1]/10 text-[#00FFD1] border-[#00FFD1]/30'
+                        : 'bg-[#0D0E1A] text-[#8B8FA3] border-[#2A2D45] hover:border-[#00FFD1]'
+                    }`}
+                  >
+                    {cfg.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <SettingRow label="Server Port" value={`${SERVER_CONFIG[serverType ?? 'ollama'].port}`} />
+        </div>
+      </div>
+
       {/* Connection Settings */}
       <div className="bg-[#141526] rounded-xl p-6 border border-[#2A2D45]">
         <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
@@ -544,11 +629,10 @@ function SettingsPage({ systemHistory, gpuHistory }: { systemHistory: SystemMetr
           Connection Settings
         </h3>
         <div className="space-y-4">
-          <SettingRow label="Ollama Base URL" value={process.env.NEXT_PUBLIC_OLLAMA_URL || 'http://localhost:11434'} />
           <SettingRow label="Dashboard Port" value="8585" />
           <SettingRow label="GPU Polling Interval" value="1000ms" />
           <SettingRow label="System Polling Interval" value="2000ms" />
-          <SettingRow label="Ollama Polling Interval" value="5000ms" />
+          <SettingRow label="Inference Server Polling Interval" value="5000ms" />
         </div>
       </div>
 
@@ -659,7 +743,7 @@ function SettingsPage({ systemHistory, gpuHistory }: { systemHistory: SystemMetr
         <div className="space-y-2 text-sm">
           <RequirementRow name="Node.js 18+" required desc="Auto-installed by installer via nvm" />
           <RequirementRow name="npm 9+" required desc="Bundled with Node.js" />
-          <RequirementRow name="Ollama" desc="For running LLM benchmarks locally" />
+          <RequirementRow name="Ollama or LM Studio" desc="For running LLM benchmarks locally" />
           <RequirementRow name="NVIDIA GPU + drivers" desc="For GPU metrics via nvidia-smi" />
           <RequirementRow name="PostgreSQL" desc="Set DATABASE_URL for benchmark persistence" />
         </div>
