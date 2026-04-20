@@ -19,6 +19,17 @@ interface GpuData {
   timestamp: number;
 }
 
+interface SystemInfo {
+  dgxOs: boolean;
+  dgxOsVersion: string | null;
+  gb10: boolean;
+  unifiedMemory: boolean;
+  unifiedMemoryTotalGB: number | null;
+  nvlinkCount: number;
+  nvSwitchCount: number;
+  gpuName: string | null;
+}
+
 async function getNvidiaSmiData(): Promise<GpuData | null> {
   try {
     const { stdout } = await execAsync(
@@ -50,10 +61,13 @@ async function getSiGpuData(): Promise<GpuData | null> {
     const graphics = await si.graphics();
     const gpu = graphics.controllers?.[0];
     if (gpu) {
+      // systeminformation returns memory in bytes; convert to MiB to match nvidia-smi format
+      const memoryUsedMiB = Math.round((gpu.memoryUsed ?? 0) / (1024 * 1024));
+      const memoryTotalMiB = Math.round(((gpu.memoryTotal ?? gpu.vram ?? 0)) / (1024 * 1024));
       return {
         utilization: gpu.utilizationGpu ?? 0,
-        vramUsed: gpu.memoryUsed ?? 0,
-        vramTotal: gpu.memoryTotal ?? gpu.vram ?? 0,
+        vramUsed: memoryUsedMiB,
+        vramTotal: memoryTotalMiB,
         powerDraw: 0,
         temperature: gpu.temperatureGpu ?? 0,
         clockSpeed: gpu.clockCore ?? 0,
@@ -68,6 +82,76 @@ async function getSiGpuData(): Promise<GpuData | null> {
   return null;
 }
 
+async function detectSystemInfo(): Promise<SystemInfo> {
+  const result: SystemInfo = {
+    dgxOs: false,
+    dgxOsVersion: null,
+    gb10: false,
+    unifiedMemory: false,
+    unifiedMemoryTotalGB: null,
+    nvlinkCount: 0,
+    nvSwitchCount: 0,
+    gpuName: null,
+  };
+
+  // Detect DGX OS
+  try {
+    const { stdout: dgxRelease } = await execAsync('cat /etc/nvidia-release-release 2>/dev/null || cat /etc/dgx-release 2>/dev/null || echo ""', { timeout: 2000 });
+    const release = dgxRelease.trim().toLowerCase();
+    if (release.includes('dgx') || release.includes('ubuntu') && release.includes('nvidia')) {
+      result.dgxOs = true;
+      result.dgxOsVersion = dgxRelease.trim() || 'DGX OS';
+    }
+  } catch {
+    // DGX OS detection not available
+  }
+
+  // Detect GB10 Grace Blackwell
+  try {
+    const { stdout: gpuName } = await execAsync('nvidia-smi --query-gpu=name --format=csv,noheader,nounits', { timeout: 3000 });
+    const name = (gpuName || '').trim();
+    result.gpuName = name || null;
+
+    if (name.includes('GB10') || name.toLowerCase().includes('grace blackwell')) {
+      result.gb10 = true;
+      result.unifiedMemory = true;
+      // GB10 has either 144GB or 288GB unified memory
+      // Check total system memory as proxy for unified memory size
+      try {
+        const { stdout: meminfo } = await execAsync('grep MemTotal /proc/meminfo', { timeout: 2000 });
+        const match = meminfo.match(/(\d+)/);
+        if (match) {
+          const memGB = Math.round(parseInt(match[1]) / (1024 * 1024));
+          result.unifiedMemoryTotalGB = memGB;
+        }
+      } catch {
+        // Fall back to known GB10 configs
+        result.unifiedMemoryTotalGB = name.includes('288') ? 288 : 144;
+      }
+    }
+  } catch {
+    // nvidia-smi not available for GB10 detection
+  }
+
+  // Detect NVLink links
+  try {
+    const { stdout: nvlink } = await execAsync('nvidia-smi nvlink --status=0 2>/dev/null | grep -c "Link is active" || echo "0"', { timeout: 3000 });
+    result.nvlinkCount = parseInt(nvlink.trim()) || 0;
+  } catch {
+    // NVLink detection not available
+  }
+
+  // Detect NVSwitch count
+  try {
+    const { stdout: nvidiaTopo } = await execAsync('nvidia-smi topo -m 2>/dev/null | grep -c "NV1\\|NV2\\|NV3\\|NV4\\|NV5\\|NV6\\|NV7" || echo "0"', { timeout: 3000 });
+    result.nvSwitchCount = parseInt(nvidiaTopo.trim()) || 0;
+  } catch {
+    // NVSwitch detection not available
+  }
+
+  return result;
+}
+
 export async function GET() {
   try {
     // Try nvidia-smi first (most reliable for NVIDIA GPUs)
@@ -75,6 +159,9 @@ export async function GET() {
     if (!data) {
       data = await getSiGpuData();
     }
+
+    const systemInfo = await detectSystemInfo();
+
     if (!data) {
       return NextResponse.json({
         utilization: 0,
@@ -86,9 +173,14 @@ export async function GET() {
         available: false,
         gpuName: null,
         timestamp: Date.now(),
+        systemInfo,
       });
     }
-    return NextResponse.json(data);
+
+    return NextResponse.json({
+      ...data,
+      systemInfo,
+    });
   } catch (e: any) {
     return NextResponse.json(
       { error: e?.message ?? 'Failed to get GPU metrics', available: false, timestamp: Date.now() },

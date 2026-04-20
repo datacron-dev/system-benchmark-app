@@ -8,6 +8,16 @@ export interface GpuMetrics {
   available: boolean;
   gpuName?: string | null;
   timestamp: number;
+  systemInfo?: {
+    dgxOs: boolean;
+    dgxOsVersion: string | null;
+    gb10: boolean;
+    unifiedMemory: boolean;
+    unifiedMemoryTotalGB: number | null;
+    nvlinkCount: number;
+    nvSwitchCount: number;
+    gpuName: string | null;
+  };
 }
 
 export interface SystemMetrics {

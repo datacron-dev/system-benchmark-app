@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Microchip } from 'lucide-react';
+import { Microchip, Cpu, Link } from 'lucide-react';
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, Legend
 } from 'recharts';
@@ -13,6 +13,7 @@ interface Props {
 
 export default function GpuMonitorPanel({ history }: Props) {
   const latestGpu = (history ?? [])?.[history?.length - 1 ?? 0];
+  const sysInfo = latestGpu?.systemInfo;
 
   const chartData = useMemo(() => {
     return (history ?? []).map((m: GpuMetrics, i: number) => ({
@@ -24,6 +25,9 @@ export default function GpuMonitorPanel({ history }: Props) {
     }));
   }, [history]);
 
+  const displayGpuName = latestGpu?.gpuName || sysInfo?.gpuName || null;
+  const totalGB = latestGpu?.vramTotal ? Math.round(latestGpu.vramTotal / 1024) : 0;
+
   return (
     <div className="bg-[#141526] rounded-xl border border-[#2A2D45] p-4">
       <div className="flex items-center justify-between mb-4">
@@ -34,19 +38,56 @@ export default function GpuMonitorPanel({ history }: Props) {
         <div className="flex items-center gap-2">
           <span className={`status-dot ${latestGpu?.available ? 'online' : 'offline'}`} />
           <span className="text-xs text-[#8B8FA3]">
-            {latestGpu?.available ? (latestGpu?.gpuName ?? 'GPU Detected') : 'No GPU Detected'}
+            {latestGpu?.available ? (displayGpuName ?? 'GPU Detected') : 'No GPU Detected'}
           </span>
+          {sysInfo?.gb10 && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#FF9149]/20 text-[#FF9149] uppercase tracking-wider">
+              GB10
+            </span>
+          )}
+          {sysInfo?.dgxOs && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#9D5CFF]/20 text-[#9D5CFF] uppercase tracking-wider">
+              DGX OS
+            </span>
+          )}
         </div>
       </div>
 
       {/* Live metrics badges */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4">
         <MetricBadge label="Utilization" value={`${latestGpu?.utilization ?? 0}%`} color="#00FFD1" />
-        <MetricBadge label="VRAM" value={`${((latestGpu?.vramUsed ?? 0) / 1024).toFixed(1)} / ${((latestGpu?.vramTotal ?? 0) / 1024).toFixed(0)} GB`} color="#60B5FF" />
+        <MetricBadge label="VRAM" value={`${((latestGpu?.vramUsed ?? 0) / 1024).toFixed(1)} / ${totalGB} GB`} color="#60B5FF" />
         <MetricBadge label="Power" value={`${latestGpu?.powerDraw ?? 0}W`} color="#FF9149" />
         <MetricBadge label="Temp" value={`${latestGpu?.temperature ?? 0}°C`} color="#FF4D6A" />
         <MetricBadge label="Clock" value={`${latestGpu?.clockSpeed ?? 0} MHz`} color="#9D5CFF" />
       </div>
+
+      {/* System info bar */}
+      {sysInfo && (
+        <div className="flex flex-wrap items-center gap-3 mb-4 px-3 py-2 bg-[#0D0E1A] rounded-lg">
+          {sysInfo.unifiedMemory && (
+            <div className="flex items-center gap-1.5">
+              <Cpu className="w-3.5 h-3.5 text-[#00FFD1]" />
+              <span className="text-[11px] text-[#8B8FA3]">Unified Memory</span>
+              <span className="text-[11px] font-bold text-white">{sysInfo.unifiedMemoryTotalGB ?? '?'} GB</span>
+            </div>
+          )}
+          {sysInfo.nvlinkCount > 0 && (
+            <div className="flex items-center gap-1.5">
+              <Link className="w-3.5 h-3.5 text-[#60B5FF]" />
+              <span className="text-[11px] text-[#8B8FA3]">NVLink</span>
+              <span className="text-[11px] font-bold text-white">{sysInfo.nvlinkCount}</span>
+            </div>
+          )}
+          {sysInfo.nvSwitchCount > 0 && (
+            <div className="flex items-center gap-1.5">
+              <Link className="w-3.5 h-3.5 text-[#FF9149]" />
+              <span className="text-[11px] text-[#8B8FA3]">NVSwitch</span>
+              <span className="text-[11px] font-bold text-white">{sysInfo.nvSwitchCount}</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Chart */}
       <div className="h-[220px] w-full">

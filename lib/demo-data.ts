@@ -22,6 +22,16 @@ export function generateGpuMetrics(prev?: GpuMetrics): GpuMetrics {
     clockSpeed: clamp(base.clockSpeed + randomWalk(50), 1200, 2400),
     available: true,
     timestamp: Date.now(),
+    systemInfo: {
+      dgxOs: false,
+      dgxOsVersion: null,
+      gb10: false,
+      unifiedMemory: false,
+      unifiedMemoryTotalGB: null,
+      nvlinkCount: 0,
+      nvSwitchCount: 0,
+      gpuName: null,
+    },
   };
 }
 

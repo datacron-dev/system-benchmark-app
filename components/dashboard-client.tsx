@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Activity, Cpu, HardDrive, Play, History, Settings, Gauge,
   Server, Zap, Terminal, BarChart3, Download, ChevronLeft, ChevronRight,
-  Monitor, BookOpen, Rocket, RefreshCw, Info
+  Monitor, BookOpen, Rocket, RefreshCw, Info, Microchip
 } from 'lucide-react';
 import type {
   GpuMetrics, SystemMetrics, OllamaStatus, BenchmarkResult, BenchmarkParams
@@ -453,7 +453,7 @@ export default function DashboardClient() {
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.3 }}
               >
-                <SettingsPage systemHistory={systemHistory} />
+                <SettingsPage systemHistory={systemHistory} gpuHistory={gpuHistory} />
               </motion.div>
             )}
           </AnimatePresence>
@@ -530,8 +530,10 @@ function StatCard({ icon: Icon, label, value, color, suffix }: {
   );
 }
 
-function SettingsPage({ systemHistory }: { systemHistory: SystemMetrics[] }) {
+function SettingsPage({ systemHistory, gpuHistory }: { systemHistory: SystemMetrics[]; gpuHistory: GpuMetrics[] }) {
   const latest = systemHistory?.[systemHistory.length - 1];
+  const latestGpu = gpuHistory?.[gpuHistory.length - 1];
+  const sysInfo = latestGpu?.systemInfo;
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -565,6 +567,34 @@ function SettingsPage({ systemHistory }: { systemHistory: SystemMetrics[] }) {
           <SettingRow label="Hostname" value={latest?.hostname ?? 'Detecting...'} />
           {latest?.uptime != null && (
             <SettingRow label="System Uptime" value={formatUptime(latest.uptime)} />
+          )}
+        </div>
+      </div>
+
+      {/* GPU & Accelerator Info */}
+      <div className="bg-[#141526] rounded-xl p-6 border border-[#2A2D45]">
+        <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <Microchip className="w-5 h-5 text-[#00FFD1]" />
+          GPU & Accelerator
+        </h3>
+        <div className="space-y-4">
+          <SettingRow label="GPU Model" value={latestGpu?.gpuName ?? sysInfo?.gpuName ?? 'Detecting...'} />
+          <SettingRow label="VRAM Total" value={latestGpu?.vramTotal ? `${Math.round(latestGpu.vramTotal / 1024)} GB` : 'Detecting...'} />
+          <SettingRow label="VRAM Used" value={latestGpu?.vramUsed ? `${(latestGpu.vramUsed / 1024).toFixed(1)} GB` : 'Detecting...'} />
+          {sysInfo?.gb10 && (
+            <SettingRow label="Architecture" value="GB10 Grace Blackwell (Unified Memory)" />
+          )}
+          {sysInfo?.unifiedMemory && sysInfo?.unifiedMemoryTotalGB && (
+            <SettingRow label="Unified Memory (GOU + CPU)" value={`${sysInfo.unifiedMemoryTotalGB} GB`} />
+          )}
+          {sysInfo?.dgxOs && (
+            <SettingRow label="OS" value={sysInfo.dgxOsVersion ?? 'DGX OS'} />
+          )}
+          {(sysInfo?.nvlinkCount ?? 0) > 0 && (
+            <SettingRow label="NVLink Active" value={`${sysInfo!.nvlinkCount} links`} />
+          )}
+          {(sysInfo?.nvSwitchCount ?? 0) > 0 && (
+            <SettingRow label="NVSwitch" value={`${sysInfo!.nvSwitchCount} switches`} />
           )}
         </div>
       </div>
