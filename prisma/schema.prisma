@@ -25,6 +25,7 @@ model BenchmarkRun {
   duration    Float?   // total run duration in seconds
   logOutput   String?  // raw log output
   notes       String?
+  serverType  String?  // ollama | lmstudio
 
   @@index([createdAt])
   @@index([model])
