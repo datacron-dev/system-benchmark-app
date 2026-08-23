@@ -56,7 +56,11 @@ export default function GpuMonitorPanel({ history }: Props) {
       {/* Live metrics badges */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4">
         <MetricBadge label="Utilization" value={`${latestGpu?.utilization ?? 0}%`} color="#00FFD1" />
-        <MetricBadge label="VRAM" value={`${((latestGpu?.vramUsed ?? 0) / 1024).toFixed(1)} / ${totalGB} GB`} color="#60B5FF" />
+        <MetricBadge label={sysInfo?.unifiedMemory ? 'Unified Mem' : 'VRAM'} value={
+          sysInfo?.unifiedMemory && sysInfo?.unifiedMemoryTotalGB
+            ? `${sysInfo.unifiedMemoryTotalGB} GB`
+            : `${((latestGpu?.vramUsed ?? 0) / 1024).toFixed(1)} / ${totalGB} GB`
+        } color="#60B5FF" />
         <MetricBadge label="Power" value={`${latestGpu?.powerDraw ?? 0}W`} color="#FF9149" />
         <MetricBadge label="Temp" value={`${latestGpu?.temperature ?? 0}°C`} color="#FF4D6A" />
         <MetricBadge label="Clock" value={`${latestGpu?.clockSpeed ?? 0} MHz`} color="#9D5CFF" />

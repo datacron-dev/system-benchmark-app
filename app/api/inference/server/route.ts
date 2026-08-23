@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,36 +55,33 @@ async function probeOllama(): Promise<ServerInfo | null> {
 
 async function probeLmStudio(): Promise<ServerInfo | null> {
   try {
-    const tagsRes = await fetch('http://localhost:1234/api/tags', { signal: AbortSignal.timeout(2000) });
-    if (!tagsRes.ok) return null;
-    const tagsData = await tagsRes.json();
-    const models = tagsData?.models?.map((m: any) => m?.name).filter(Boolean) || [];
+    // LM Studio uses OpenAI-compatible /v1/ endpoints
+    const modelsRes = await fetch('http://localhost:1234/v1/models', { signal: AbortSignal.timeout(2000) });
+    if (!modelsRes.ok) return null;
+    const modelsData = await modelsRes.json();
+    const models = (modelsData?.data ?? []).map((m: any) => m?.id).filter(Boolean);
 
-    // LM Studio doesn't have an /api/ps endpoint, so we check if any model is loaded
-    // by checking /api/running-models (newer versions) or just report models available
+    // Detect loaded model by sending a lightweight request with empty model string.
+    // LM Studio responds with the currently loaded model name in the response.
     let loadedModel: string | null = null;
     try {
-      const runningRes = await fetch('http://localhost:1234/api/running-models', { signal: AbortSignal.timeout(1000) });
-      if (runningRes.ok) {
-        const runningData = await runningRes.json();
-        loadedModel = runningData?.model ?? null;
+      const probeRes = await fetch('http://localhost:1234/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: '',
+          messages: [{ role: 'user', content: '.' }],
+          max_tokens: 1,
+          stream: false,
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (probeRes.ok) {
+        const probeData = await probeRes.json();
+        loadedModel = probeData?.model ?? null;
       }
     } catch {
-      // /api/running-models not available, try to infer from /api/models
-    }
-
-    if (!loadedModel && models.length > 0) {
-      // Check if any model is loaded via /api/models
-      try {
-        const modelsRes = await fetch('http://localhost:1234/api/models', { signal: AbortSignal.timeout(1000) });
-        if (modelsRes.ok) {
-          const modelsData = await modelsRes.json();
-          const loaded = modelsData?.data?.find((m: any) => m?.id?.includes?.('loaded') || m?.id?.includes?.('active'));
-          if (loaded) loadedModel = loaded?.id ?? loaded?.name ?? null;
-        }
-      } catch {
-        // Fallback: just report models available
-      }
+      // Could not detect loaded model — LM Studio may not have one loaded
     }
 
     return {
@@ -100,48 +97,65 @@ async function probeLmStudio(): Promise<ServerInfo | null> {
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const [ollama, lmstudio] = await Promise.allSettled([
-      probeOllama(),
-      probeLmStudio(),
-    ]);
+    const { searchParams } = request.nextUrl;
+    const filterServer = searchParams.get('server'); // 'ollama' | 'lmstudio' | null
 
-    const result: ServerInfo = {
-      server: null,
-      running: false,
-      loadedModel: null,
-      processor: null,
-      vramUsed: null,
-      availableModels: [],
-    };
+    let ollamaResult: ServerInfo | null = null;
+    let lmstudioResult: ServerInfo | null = null;
 
-    // Prefer Ollama if both are available
-    if (ollama.status === 'fulfilled' && ollama.value) {
-      Object.assign(result, ollama.value);
+    if (!filterServer || filterServer === 'ollama') {
+      ollamaResult = await probeOllama();
     }
-    if (lmstudio.status === 'fulfilled' && lmstudio.value) {
-      // Only use LM Studio if Ollama wasn't found
-      if (!result.server) {
-        Object.assign(result, lmstudio.value);
-      } else {
-        // If Ollama found, add LM Studio models too
-        result.availableModels = [
-          ...result.availableModels,
-          ...lmstudio.value.availableModels.map((m: string) => `[LM Studio] ${m}`),
-        ];
+    if (!filterServer || filterServer === 'lmstudio') {
+      lmstudioResult = await probeLmStudio();
+    }
+
+    // Single-server mode (legacy + filtered)
+    if (filterServer) {
+      const result = filterServer === 'ollama' ? ollamaResult : lmstudioResult;
+      if (result) {
+        return NextResponse.json(result);
       }
+      return NextResponse.json({
+        server: null,
+        running: false,
+        loadedModel: null,
+        processor: null,
+        vramUsed: null,
+        availableModels: [],
+      });
     }
 
-    return NextResponse.json(result);
+    // Combined mode: return both servers
+    const servers = [];
+    const allModels: string[] = [];
+
+    if (ollamaResult) {
+      servers.push({
+        server: ollamaResult.server,
+        running: ollamaResult.running,
+        loadedModel: ollamaResult.loadedModel,
+        processor: ollamaResult.processor,
+        vramUsed: ollamaResult.vramUsed,
+      });
+      allModels.push(...ollamaResult.availableModels.map((m) => `[Ollama] ${m}`));
+    }
+
+    if (lmstudioResult) {
+      servers.push({
+        server: lmstudioResult.server,
+        running: lmstudioResult.running,
+        loadedModel: lmstudioResult.loadedModel,
+        processor: lmstudioResult.processor,
+        vramUsed: lmstudioResult.vramUsed,
+      });
+      allModels.push(...lmstudioResult.availableModels.map((m) => `[LM Studio] ${m}`));
+    }
+
+    return NextResponse.json({ servers, availableModels: allModels });
   } catch (e: any) {
-    return NextResponse.json({
-      server: null,
-      running: false,
-      loadedModel: null,
-      processor: null,
-      vramUsed: null,
-      availableModels: [],
-    });
+    return NextResponse.json({ servers: [], availableModels: [] });
   }
 }

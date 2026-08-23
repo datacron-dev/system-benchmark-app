@@ -9,12 +9,12 @@ interface Props {
 
 export default function ResultsPanel({ result }: Props) {
   const metrics = [
-    { icon: Gauge, label: 't/s (total)', value: result?.tsTotal, unit: 't/s', color: '#00FFD1' },
-    { icon: TrendingUp, label: 't/s (per req)', value: result?.tsReq, unit: 't/s', color: '#60B5FF' },
-    { icon: Zap, label: 'Peak t/s', value: result?.peakTs, unit: 't/s', color: '#FF9149' },
-    { icon: Clock, label: 'TTFR', value: result?.ttfr, unit: 'ms', color: '#9D5CFF' },
-    { icon: Timer, label: 'est_ppt', value: result?.estPpt, unit: 'ms', color: '#FF9898' },
-    { icon: BarChart3, label: 'Duration', value: result?.duration, unit: 's', color: '#80D8C3' },
+    { icon: Gauge, label: 't/s (total)', value: result?.tsTotal, unit: 't/s', color: '#00FFD1', treatZeroAsNA: false },
+    { icon: TrendingUp, label: 't/s (per req)', value: result?.tsReq, unit: 't/s', color: '#60B5FF', treatZeroAsNA: false },
+    { icon: Zap, label: 'Peak t/s', value: result?.peakTs, unit: 't/s', color: '#FF9149', treatZeroAsNA: false },
+    { icon: Clock, label: 'TTFR', value: result?.ttfr, unit: 'ms', color: '#9D5CFF', treatZeroAsNA: true },
+    { icon: Timer, label: 'Prompt ms/tok', value: result?.estPpt, unit: 'ms', color: '#FF9898', treatZeroAsNA: true },
+    { icon: BarChart3, label: 'Duration', value: result?.duration, unit: 's', color: '#80D8C3', treatZeroAsNA: false },
   ];
 
   return (
@@ -47,7 +47,9 @@ export default function ResultsPanel({ result }: Props) {
               >
                 {Icon && <Icon className="w-4 h-4 mx-auto mb-1" style={{ color: m?.color ?? '#fff' }} />}
                 <p className="text-lg font-bold text-white terminal-font">
-                  {m?.value != null ? (typeof m.value === 'number' ? m.value.toFixed(1) : m.value) : '-'}
+                  {m?.value != null && !isNaN(m.value) && !(m?.treatZeroAsNA && m.value === 0)
+                    ? (typeof m.value === 'number' ? m.value.toFixed(1) : m.value)
+                    : 'N/A'}
                 </p>
                 <p className="text-[11px] text-[#8B8FA3]">{m?.label ?? ''} ({m?.unit ?? ''})</p>
               </div>

@@ -8,11 +8,12 @@ import {
   Monitor, BookOpen, Rocket, RefreshCw, Info, Microchip
 } from 'lucide-react';
 import type {
-  GpuMetrics, SystemMetrics, InferenceServerStatus, InferenceServerType, BenchmarkResult, BenchmarkParams
+  GpuMetrics, SystemMetrics, InferenceServerStatus, InferenceServerType, BenchmarkResult, BenchmarkParams,
+  InferenceServersStatus, ServerStatusEntry,
 } from '@/lib/types';
 import { LOAD_PRESETS } from '@/lib/types';
 import GpuMonitorPanel from './panels/gpu-monitor-panel';
-import InferenceServerPanel from './panels/inference-server-panel';
+import InferenceServersPanel from './panels/inference-servers-panel';
 import BenchmarkRunnerPanel from './panels/benchmark-runner-panel';
 import ResultsPanel from './panels/results-panel';
 import SystemStatsPanel from './panels/system-stats-panel';
@@ -46,9 +47,14 @@ export default function DashboardClient() {
   const [gpuHistory, setGpuHistory] = useState<GpuMetrics[]>([]);
   const [systemHistory, setSystemHistory] = useState<SystemMetrics[]>([]);
   const [serverType, setServerType] = useState<InferenceServerType | null>(
-    (typeof window !== 'undefined' && localStorage.getItem('benchmark-server')) || 'ollama'
+    (() => {
+      if (typeof window === 'undefined') return 'lmstudio';
+      const v = localStorage.getItem('benchmark-server');
+      return v === 'ollama' || v === 'lmstudio' ? v : 'lmstudio';
+    })()
   );
   const [inferenceStatus, setInferenceStatus] = useState<InferenceServerStatus>(DEFAULT_INFERENCE);
+  const [inferenceServers, setInferenceServers] = useState<InferenceServersStatus>({ servers: [], availableModels: [] });
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
   const [benchmarkLog, setBenchmarkLog] = useState<string[]>([]);
   const [currentResult, setCurrentResult] = useState<Partial<BenchmarkResult> | null>(null);
@@ -112,14 +118,31 @@ export default function DashboardClient() {
         const res = await fetch('/api/inference/server');
         if (res.ok && active) {
           const data = await res.json();
-          setInferenceStatus(data as InferenceServerStatus);
+          // New combined format: { servers: [...], availableModels: [...] }
+          if ('servers' in data && Array.isArray(data.servers)) {
+            setInferenceServers(data as InferenceServersStatus);
+            // Also update legacy single-server status for backward compat
+            const primary = data.servers.find((s: ServerStatusEntry) => s.server === (serverType ?? 'ollama'))
+              ?? data.servers[0];
+            setInferenceStatus({
+              server: primary?.server ?? null,
+              running: primary?.running ?? false,
+              loadedModel: primary?.loadedModel ?? null,
+              processor: primary?.processor ?? null,
+              vramUsed: primary?.vramUsed ?? null,
+              availableModels: data.availableModels ?? [],
+            });
+          } else {
+            // Legacy single-server format
+            setInferenceStatus(data as InferenceServerStatus);
+          }
         }
       } catch {}
     };
     poll();
     const interval = setInterval(poll, 5000);
     return () => { active = false; clearInterval(interval); };
-  }, [mounted]);
+  }, [mounted, serverType]);
 
   // Fetch benchmarks from API
   const fetchBenchmarks = useCallback(async () => {
@@ -163,7 +186,7 @@ export default function DashboardClient() {
       const res = await fetch('/api/benchmarks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...params, status: 'running' }),
+        body: JSON.stringify({ ...params, status: 'running', serverType: serverType ?? 'lmstudio' }),
       });
       const created = await res.json();
 
@@ -182,19 +205,101 @@ export default function DashboardClient() {
       // Check if inference server is available
       let serverAvailable = false;
       try {
-        const check = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(3000) });
-        serverAvailable = check.ok;
+        if (serverType === 'lmstudio') {
+          // Probe OpenAI-compatible endpoint via a lightweight test request
+          const probeRes = await fetch(`${baseUrl}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: '',
+              messages: [{ role: 'user', content: '.' }],
+              max_tokens: 1,
+              stream: false,
+            }),
+            signal: AbortSignal.timeout(3000),
+          });
+          serverAvailable = probeRes.ok;
+        } else {
+          const check = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(3000) });
+          serverAvailable = check.ok;
+        }
       } catch {}
 
       if (!serverAvailable) {
         addLog(`[WARN] ${config.label} is not running at ${baseUrl}`);
         addLog('[INFO] Running simulated benchmark for demonstration...');
         addLog('');
+      } else if (serverType === 'lmstudio') {
+        addLog(`[INFO] Using LM Studio OpenAI-compatible API at ${baseUrl}`);
+        addLog(`[INFO] Endpoint: POST ${baseUrl}/v1/chat/completions`);
+      }
+      addLog('');
+
+      // ── Startup sanity check: send a single test request ──
+      if (serverAvailable && serverType === 'lmstudio') {
+        addLog('[INFO] Running startup sanity check...');
+        try {
+          const sanityReqStart = Date.now();
+          const sanityResp = await fetch(`${baseUrl}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: params.model,
+              messages: [{ role: 'user', content: 'Say hello.' }],
+              max_tokens: 5,
+            }),
+          });
+
+          const sanityBody = await sanityResp.json();
+          addLog(`[SANITY] Raw response: ${JSON.stringify(sanityBody).substring(0, 500)}`);
+
+          const sanityUsage = sanityBody?.usage ?? {};
+          const sanityCompletionTokens = sanityUsage?.completion_tokens ?? 0;
+          const sanityPromptTokens = sanityUsage?.prompt_tokens ?? 0;
+
+          if (sanityCompletionTokens <= 1) {
+            throw new Error('LM Studio returned <=1 completion token. Check endpoint, model, and max_tokens.');
+          }
+          addLog(`[SANITY] completion_tokens=${sanityCompletionTokens} => OK`);
+
+          if (sanityPromptTokens === 0) {
+            throw new Error('LM Studio returned 0 prompt tokens. The messages array may be empty or malformed.');
+          }
+          addLog(`[SANITY] prompt_tokens=${sanityPromptTokens} => OK`);
+          addLog('');
+        } catch (se: any) {
+          addLog(`[SANITY] FAILED: ${se?.message ?? 'Unknown error'}`);
+          addLog('[INFO] Aborting benchmark due to sanity check failure.');
+          addLog('');
+          await fetch(`/api/benchmarks/${created?.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'failed', logOutput: logLines.join('\n') }),
+          });
+          setBenchmarkRunning(false);
+          await fetchBenchmarks();
+          await fetchStats();
+          return;
+        }
       }
 
-      const allRunTs: number[] = [];
-      const allTtfr: number[] = [];
+      // Per-request metrics: full data for accurate aggregation
+      const allRequestMetrics: Array<{
+        requestStart: number;
+        requestEnd: number;
+        completionTokens: number;
+        promptTokens: number;
+        ttfrSec: number | null;
+        generationSec: number | null;
+        totalLatencySec: number;
+        reqTps: number | null;
+        e2eTps: number;
+      }> = [];
       const startTime = Date.now();
+
+      // Per-run timing: track wallSec and tsTotal for EACH run separately
+      let runWallSec = 0;
+      const perRunTsTotal: number[] = [];
 
       for (let runIdx = 0; runIdx < (params?.runs ?? 3); runIdx++) {
         if (stopRef.current) {
@@ -205,16 +310,25 @@ export default function DashboardClient() {
         addLog(`[RUN ${runIdx + 1}/${params?.runs ?? 3}] Sending ${params?.concurrency ?? 1} concurrent requests...`);
 
         if (serverAvailable) {
+          // Record run start BEFORE dispatching concurrent requests
+          const runStart = Date.now();
+
           const promises = Array.from({ length: params?.concurrency ?? 1 }, async (_, cIdx) => {
             const reqStart = Date.now();
-            let ttfr = 0;
-            let tokens = 0;
-            let ts = 0;
+            let completionTokens = 0;
+            let promptTokens = 0;
+            let ttfrSec: number | null = null;
+            let generationSec: number | null = null;
+            let totalLatencySec = 0;
+            let reqTps: number | null = null;
+            let e2eTps = 0;
 
             try {
               if (serverType === 'lmstudio') {
-                // LM Studio: OpenAI-compatible /v1/chat/completions
                 const prompt = 'Write a detailed explanation of how neural networks work, including backpropagation, gradient descent, and activation functions. '.repeat(Math.max(1, Math.floor((params?.pp ?? 512) / 20)));
+
+                // ── LM Studio OpenAI-compatible (POST /v1/chat/completions on localhost:1234) ──
+                // Check for server-side stats (LM Studio injects response.stats when available)
                 const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -227,35 +341,175 @@ export default function DashboardClient() {
                 });
 
                 const data = await resp.json();
-                ttfr = Date.now() - reqStart;
-                const generated = data?.choices?.[0]?.text ?? data?.choices?.[0]?.message?.content ?? '';
-                tokens = generated ? generated.split(/\s+/).filter(Boolean).length : (params?.tg ?? 128);
-                const duration = Date.now() - reqStart;
-                ts = duration > 0 ? Math.round((tokens / (duration / 1000)) * 10) / 10 : 0;
+                const usage = data?.usage ?? {};
+                const stats = data?.stats ?? {};
+                const reqEnd = Date.now();
+
+                // completionTokens: usage.completion_tokens (actual generated, NOT requested max_tokens)
+                completionTokens = usage?.completion_tokens ?? 0;
+                if (completionTokens === 0) {
+                  const generated = data?.choices?.[0]?.message?.reasoning_content
+                    ?? data?.choices?.[0]?.message?.content
+                    ?? data?.choices?.[0]?.text
+                    ?? '';
+                  completionTokens = generated.trim().length > 0 ? Math.max(1, Math.round(generated.length / 4)) : 1;
+                }
+                promptTokens = usage?.prompt_tokens ?? 0;
+
+                // TTFR: prefer response.stats.time_to_first_token (seconds), null if unavailable
+                ttfrSec = (stats?.time_to_first_token && stats.time_to_first_token > 0)
+                  ? stats.time_to_first_token
+                  : null;
+
+                // Generation time: prefer response.stats.generation_time (seconds), wall-clock fallback
+                totalLatencySec = (reqEnd - reqStart) / 1000;
+                generationSec = (stats?.generation_time && stats.generation_time > 0)
+                  ? stats.generation_time
+                  : (totalLatencySec > 0 ? totalLatencySec : null);
+
+                // reqTps: prefer stats.tokens_per_second, fallback to completionTokens/generationSec
+                if (stats?.tokens_per_second && stats.tokens_per_second > 0) {
+                  reqTps = stats.tokens_per_second;
+                } else if (generationSec && generationSec > 0) {
+                  reqTps = Math.round((completionTokens / generationSec) * 10) / 10;
+                }
+                e2eTps = totalLatencySec > 0 ? Math.round((completionTokens / totalLatencySec) * 10) / 10 : 0;
+
+                // Validation logging
+                addLog(`  [VALIDATE] completionTokens=${completionTokens} (source: usage.completion_tokens${completionTokens === (params?.tg ?? 128) ? ' [WARN: equals requested tg!]' : ''})`);
+                addLog(`  [VALIDATE] promptTokens=${promptTokens} (source: usage.prompt_tokens)`);
+                addLog(`  [VALIDATE] TTFR=${ttfrSec ? ttfrSec.toFixed(3) + 's (from server stats)' : 'N/A (unavailable)'}`);
+                addLog(`  [VALIDATE] generationSec=${generationSec ? generationSec.toFixed(3) + 's' + (stats?.generation_time ? ' (from server stats)' : ' (wall-clock-e2e)') : 'N/A'}`);
+                addLog(`  [VALIDATE] reqTps=${reqTps ? reqTps.toFixed(1) + ' t/s' : 'N/A'} (formula: ${stats?.tokens_per_second ? 'server tokens_per_second' : generationSec ? 'completionTokens/generationSec' : 'no data'})`);
               } else {
-                // Ollama: /api/generate
+                // ── Ollama: streaming /api/generate for accurate server-side timing ──
                 const resp = await fetch(`${baseUrl}/api/generate`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
                     model: params.model,
                     prompt: 'Write a detailed explanation of how neural networks work, including backpropagation, gradient descent, and activation functions. '.repeat(Math.max(1, Math.floor((params?.pp ?? 512) / 20))),
-                    stream: false,
+                    stream: true,
                     options: {
                       num_predict: params?.tg ?? 128,
                     },
                   }),
                 });
 
-                const data = await resp.json();
-                ttfr = Date.now() - reqStart;
-                tokens = data?.eval_count ?? (params?.tg ?? 128);
-                const evalDuration = data?.eval_duration ?? 1;
-                ts = evalDuration > 0 ? Math.round((tokens / (evalDuration / 1e9)) * 10) / 10 : 0;
+                const reader = resp.body?.getReader();
+                const decoder = new TextDecoder();
+                let accumulated = '';
+                let ttfrFirstChunk = 0;
+                let totalEvalCount = 0;
+                let totalEvalDurationNs = 0;
+                let totalPromptEvalCount = 0;
+                let fullResponse = '';
+                let doneChunk = false;
+
+                if (reader) {
+                  while (true) {
+                    const { done: streamDone, value } = await reader.read();
+                    if (streamDone) break;
+
+                    accumulated += decoder.decode(value, { stream: true });
+                    const lines = accumulated.split('\n');
+                    accumulated = lines.pop() ?? '';
+
+                    for (const line of lines) {
+                      const trimmed = line.trim();
+                      if (!trimmed || !trimmed.startsWith('{')) continue;
+
+                      try {
+                        const chunk = JSON.parse(trimmed);
+
+                        // First chunk: prompt_eval_duration as TTFR proxy (nanoseconds -> seconds)
+                        if (!ttfrFirstChunk && chunk?.prompt_eval_duration) {
+                          ttfrFirstChunk = chunk.prompt_eval_duration / 1e9;
+                          totalPromptEvalCount = chunk?.prompt_eval_count ?? 0;
+                        }
+
+                        // Accumulate per-token generation stats
+                        totalEvalCount += chunk?.eval_count ?? 0;
+                        totalEvalDurationNs += chunk?.eval_duration ?? 0;
+
+                        // Accumulate generated text
+                        fullResponse += chunk?.response ?? '';
+
+                        // Detect final chunk for fallback totals
+                        if (chunk?.done === true) {
+                          doneChunk = true;
+                          if (totalEvalCount === 0) {
+                            totalEvalCount = chunk?.eval_count ?? 0;
+                            totalEvalDurationNs = chunk?.eval_duration ?? 0;
+                          }
+                        }
+                      } catch {
+                        // Skip malformed JSON chunks
+                      }
+                    }
+                  }
+                }
+
+                // outputTokens: server-reported eval_count (actual generated, NOT requested tg)
+                completionTokens = totalEvalCount;
+                if (completionTokens === 0) {
+                  completionTokens = fullResponse.trim().length > 0
+                    ? Math.max(1, Math.round(fullResponse.length / 4))
+                    : 1;
+                }
+                promptTokens = totalPromptEvalCount;
+
+                // TTFR: prompt_eval_duration from first chunk (ns -> seconds)
+                ttfrSec = ttfrFirstChunk > 0 ? ttfrFirstChunk : null;
+
+                // Generation time: wall-clock from first token to request end
+                // Fallback to eval_duration sum if available
+                const reqEnd = Date.now();
+                totalLatencySec = Math.max((reqEnd - reqStart) / 1000, 0.001);
+
+                let genFromStats = totalEvalDurationNs > 0;
+                if (genFromStats) {
+                  generationSec = totalEvalDurationNs / 1e9;
+                } else if (ttfrSec && ttfrSec > 0 && totalLatencySec > ttfrSec) {
+                  generationSec = totalLatencySec - ttfrSec;
+                } else {
+                  generationSec = totalLatencySec;
+                }
+
+                // tsReq: completionTokens / generationSec (never from TTFR)
+                if (generationSec > 0) {
+                  reqTps = Math.round((completionTokens / generationSec) * 10) / 10;
+                }
+
+                // e2eTps
+                e2eTps = totalLatencySec > 0 ? Math.round((completionTokens / totalLatencySec) * 10) / 10 : 0;
+
+                // Validation logging
+                addLog(`  [VALIDATE] completionTokens=${completionTokens} (source: eval_count${completionTokens === (params?.tg ?? 128) ? ' [WARN: equals requested tg!]' : ''})`);
+                addLog(`  [VALIDATE] promptTokens=${promptTokens} (source: prompt_eval_count)`);
+                addLog(`  [VALIDATE] TTFR=${ttfrSec ? ttfrSec.toFixed(3) + 's (from streaming first chunk)' : 'N/A (unavailable)'}`);
+                addLog(`  [VALIDATE] generationSec=${generationSec ? generationSec.toFixed(3) + 's (' + (genFromStats ? 'eval_duration sum' : 'wall-clock') + ')' : 'N/A (unavailable)'}`);
+                addLog(`  [VALIDATE] reqTps=${reqTps ? reqTps.toFixed(1) + ' t/s' : 'N/A'} (formula: completionTokens/generationSec)`);
               }
 
-              addLog(`  Request ${cIdx + 1} complete: ${ts.toFixed(1)} t/s, TTFR: ${ttfr}ms`);
-              return { ts, ttfr, tokens };
+              const reqEnd = Date.now();
+
+              allRequestMetrics.push({
+                requestStart: reqStart,
+                requestEnd: reqEnd,
+                completionTokens,
+                promptTokens,
+                ttfrSec,
+                generationSec,
+                totalLatencySec,
+                reqTps,
+                e2eTps,
+              });
+
+              const tsDisplay = reqTps ?? e2eTps;
+              const ttfrDisplay = ttfrSec ? Math.round(ttfrSec * 1000 * 10) / 10 : null;
+              addLog(`  Request ${cIdx + 1} complete: ${reqTps ? reqTps.toFixed(1) + ' t/s' : 'N/A'}, TTFR: ${ttfrDisplay ?? 'N/A'}, tokens: ${completionTokens}`);
+              return { ts: tsDisplay, ttfr: ttfrDisplay, tokens: completionTokens };
             } catch (e: any) {
               addLog(`  Request ${cIdx + 1} failed: ${e?.message ?? 'Unknown error'}`);
               return { ts: 0, ttfr: 0, tokens: 0 };
@@ -263,26 +517,54 @@ export default function DashboardClient() {
           });
 
           const results = await Promise.all(promises);
-          const runTs = results.reduce((sum, r) => sum + r.ts, 0);
-          const avgTtfr = results.reduce((sum, r) => sum + r.ttfr, 0) / results.length;
-          allRunTs.push(...results.map(r => r.ts));
-          allTtfr.push(avgTtfr);
-          addLog(`[RUN ${runIdx + 1}/${params?.runs ?? 3}] Complete - Total: ${runTs.toFixed(1)} t/s`);
+          const runEnd = Date.now();
+          runWallSec = (runEnd - runStart) / 1000;
+          const runTokens = results.reduce((sum, r) => sum + r.tokens, 0);
+          const runTsTotal = runWallSec > 0 ? Math.round((runTokens / runWallSec) * 10) / 10 : 0;
+          perRunTsTotal.push(runTsTotal);
+          addLog(`[RUN ${runIdx + 1}/${params?.runs ?? 3}] Complete - ${runTokens} tokens, wall=${runWallSec.toFixed(2)}s, t/s(total)=${runTsTotal}`);
         } else {
-          // Simulated benchmark
-          for (let c = 1; c <= (params?.concurrency ?? 1); c++) {
-            if (stopRef.current) break;
-            await new Promise(r => setTimeout(r, 100 + Math.random() * 200));
+          // Simulated benchmark — concurrent requests with artificial delay
+          const simPromises = Array.from({ length: params?.concurrency ?? 1 }, async (_, cIdx) => {
+            const reqStart = Date.now();
+            await new Promise(r => setTimeout(r, 100 + Math.random() * 400));
+            const reqEnd = Date.now();
+            const wallMs = Math.max(reqEnd - reqStart, 1);
             const ts = 25 + Math.random() * 25;
             const ttfr = 180 + Math.random() * 150;
-            allRunTs.push(ts);
-            allTtfr.push(ttfr);
-            addLog(`  Request ${c} complete: ${ts.toFixed(1)} t/s, TTFR: ${ttfr.toFixed(0)}ms`);
-          }
-          const runTotal = allRunTs.slice(-1 * (params?.concurrency ?? 1)).reduce((s, v) => s + v, 0);
-          addLog(`[RUN ${runIdx + 1}/${params?.runs ?? 3}] Complete - Total: ${runTotal.toFixed(1)} t/s`);
+            const tokens = Math.max(1, Math.round(ts * (wallMs / 1000)));
+            const genSec = tokens / ts;
+            const ttfrSec = ttfr / 1000;
+            allRequestMetrics.push({
+              requestStart: reqStart,
+              requestEnd: reqEnd,
+              completionTokens: tokens,
+              promptTokens: Math.max(1, Math.round(tokens * 2)),
+              ttfrSec,
+              generationSec: genSec,
+              totalLatencySec: wallMs / 1000,
+              reqTps: ts,
+              e2eTps: ts,
+            });
+            addLog(`  Request ${cIdx + 1} complete: ${ts.toFixed(1)} t/s, TTFR: ${ttfr.toFixed(0)}ms`);
+            return { tokens };
+          });
+          const simResults = await Promise.all(simPromises);
+          runWallSec = Math.max(allRequestMetrics.slice(-1 * (params?.concurrency ?? 1)).reduce((s, m) => Math.max(s, m.requestEnd) - Math.min(s, m.requestStart), 0) / 1000, 0.001);
+          const simTokens = simResults.reduce((s, r) => s + r.tokens, 0);
+          const simTsTotal = runWallSec > 0 ? Math.round((simTokens / runWallSec) * 10) / 10 : 0;
+          perRunTsTotal.push(simTsTotal);
+          addLog(`[RUN ${runIdx + 1}/${params?.runs ?? 3}] Complete - ${simTokens} tokens, wall=${runWallSec.toFixed(2)}s, t/s(total)=${simTsTotal}`);
         }
         addLog('');
+      }
+
+      // Run-level validation: warn if completionTokens equals requested tg for every request
+      const requestedTg = params?.tg ?? 128;
+      const allMatchTg = allRequestMetrics.length > 0 && allRequestMetrics.every(m => m.completionTokens === requestedTg);
+      if (allMatchTg) {
+        addLog(`[WARN] Output token count equals requested tg (${requestedTg}) for every request. ` +
+          `Verify the server is reporting actual generated tokens, not the max_tokens limit.`);
       }
 
       if (stopRef.current) {
@@ -297,23 +579,49 @@ export default function DashboardClient() {
         return;
       }
 
-      const duration = Math.round((Date.now() - startTime) / 100) / 10;
-      const tsTotal = allRunTs.length > 0 ? Math.round(allRunTs.reduce((s, v) => s + v, 0) / allRunTs.length * (params?.concurrency ?? 1) * 10) / 10 : 0;
-      const tsReq = allRunTs.length > 0 ? Math.round(allRunTs.reduce((s, v) => s + v, 0) / allRunTs.length * 10) / 10 : 0;
-      const peakTs = allRunTs.length > 0 ? Math.round(Math.max(...allRunTs) * 10) / 10 : 0;
-      const ttfrAvg = allTtfr.length > 0 ? Math.round(allTtfr.reduce((s, v) => s + v, 0) / allTtfr.length * 10) / 10 : 0;
-      const estPpt = tsReq > 0 ? Math.round(1000 / tsReq * 10) / 10 : 0;
+      const wallDuration = Math.max((Date.now() - startTime) / 1000, 0.001);
+
+      // Aggregate from allRequestMetrics
+      const totalCompletionTokens = allRequestMetrics.reduce((s, m) => s + m.completionTokens, 0);
+      const totalPromptTokens = allRequestMetrics.reduce((s, m) => s + m.promptTokens, 0);
+
+      // tsTotal: mean of per-run throughput values (each run's tokens / run's wall time)
+      const tsTotal = perRunTsTotal.length > 0
+        ? Math.round((perRunTsTotal.reduce((s, v) => s + v, 0) / perRunTsTotal.length) * 10) / 10
+        : 0;
+
+      // tsReq: average per-request t/s (only requests with known reqTps)
+      const requestsWithReqTps = allRequestMetrics.filter(m => m.reqTps != null && m.reqTps > 0);
+      const tsReq = requestsWithReqTps.length > 0
+        ? Math.round((requestsWithReqTps.reduce((s, m) => s + m.reqTps!, 0) / requestsWithReqTps.length) * 10) / 10
+        : null;
+
+      // peakTs: highest single-request t/s
+      const peakTs = requestsWithReqTps.length > 0
+        ? Math.round(Math.max(...requestsWithReqTps.map(m => m.reqTps!)) * 10) / 10
+        : null;
+
+      // TTFR: average time to first token across all requests (ms)
+      const requestsWithTtfr = allRequestMetrics.filter(m => m.ttfrSec != null && m.ttfrSec > 0);
+      const ttfrAvg = requestsWithTtfr.length > 0
+        ? Math.round((requestsWithTtfr.reduce((s, m) => s + m.ttfrSec! * 1000, 0) / requestsWithTtfr.length) * 10) / 10
+        : null;
+
+      // approx_prompt_ms_per_token: TTFR / promptTokens * 1000 (ms per prompt token)
+      const approxPromptMsPerToken = (requestsWithTtfr.length > 0 && totalPromptTokens > 0)
+        ? Math.round((requestsWithTtfr.reduce((s, m) => s + m.ttfrSec!, 0) / requestsWithTtfr.length * 1000 / totalPromptTokens) * 10) / 10
+        : null;
 
       addLog('\u2550\u2550\u2550 BENCHMARK RESULTS \u2550\u2550\u2550');
-      addLog(`| t/s (total)  | ${tsTotal} |`);
-      addLog(`| t/s (req)    | ${tsReq} |`);
-      addLog(`| Peak t/s     | ${peakTs} |`);
-      addLog(`| TTFR (ms)    | ${ttfrAvg} |`);
-      addLog(`| est_ppt (ms) | ${estPpt} |`);
+      addLog(`| t/s (total)     | ${tsTotal} |`);
+      addLog(`| t/s (req)       | ${tsReq} |`);
+      addLog(`| Peak t/s        | ${peakTs} |`);
+      addLog(`| TTFR (ms)       | ${ttfrAvg} |`);
+      addLog(`| approx_ppt (ms) | ${approxPromptMsPerToken} |`);
       addLog('');
       addLog('[INFO] Benchmark complete. Results saved.');
 
-      const result = { tsTotal, tsReq, peakTs, ttfr: ttfrAvg, estPpt, duration };
+      const result = { tsTotal, tsReq, peakTs, ttfr: ttfrAvg, estPpt: approxPromptMsPerToken, duration: wallDuration };
 
       setCurrentResult({
         ...created,
@@ -327,7 +635,12 @@ export default function DashboardClient() {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ...result,
+          tsTotal,
+          tsReq,
+          peakTs,
+          ttfr: ttfrAvg,
+          estPpt: approxPromptMsPerToken,
+          duration: wallDuration,
           status: 'completed',
           logOutput: logLines.join('\n'),
         }),
@@ -465,6 +778,7 @@ export default function DashboardClient() {
                   gpuHistory={gpuHistory}
                   systemHistory={systemHistory}
                   inferenceStatus={inferenceStatus}
+                  inferenceServers={inferenceServers}
                   benchmarkRunning={benchmarkRunning}
                   benchmarkLog={benchmarkLog}
                   currentResult={currentResult}
@@ -510,12 +824,13 @@ export default function DashboardClient() {
 
 // Dashboard page assembles the 6 panels
 function DashboardPage({
-  gpuHistory, systemHistory, inferenceStatus, benchmarkRunning,
+  gpuHistory, systemHistory, inferenceStatus, inferenceServers, benchmarkRunning,
   benchmarkLog, currentResult, onRunBenchmark, onStopBenchmark, stats
 }: {
   gpuHistory: GpuMetrics[];
   systemHistory: SystemMetrics[];
   inferenceStatus: InferenceServerStatus;
+  inferenceServers: InferenceServersStatus;
   benchmarkRunning: boolean;
   benchmarkLog: string[];
   currentResult: Partial<BenchmarkResult> | null;
@@ -540,14 +855,14 @@ function DashboardPage({
         </div>
         <div className="space-y-4">
           <SystemStatsPanel history={systemHistory} />
-          <InferenceServerPanel status={inferenceStatus} />
+          <InferenceServersPanel servers={inferenceServers.servers} />
         </div>
       </div>
 
       {/* Row 2: Benchmark Runner + Results */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <BenchmarkRunnerPanel
-          models={inferenceStatus?.availableModels ?? []}
+          models={inferenceServers?.availableModels ?? inferenceStatus?.availableModels ?? []}
           running={benchmarkRunning}
           logLines={benchmarkLog}
           onRun={onRunBenchmark}
@@ -569,7 +884,7 @@ function StatCard({ icon: Icon, label, value, color, suffix }: {
         <span className="text-xs text-[#8B8FA3]">{label ?? ''}</span>
       </div>
       <p className="text-2xl font-bold text-white terminal-font">
-        {typeof value === 'number' ? value.toLocaleString() : '0'}{suffix ?? ''}
+        {typeof value === 'number' && !isNaN(value) ? value.toLocaleString() : '0'}{suffix ?? ''}
       </p>
     </div>
   );
@@ -580,8 +895,8 @@ function SettingsPage({
 }: {
   systemHistory: SystemMetrics[];
   gpuHistory: GpuMetrics[];
-  serverType: InferenceServerType;
-  onSetServerType: (type: InferenceServerType | null) => void;
+  serverType: InferenceServerType | null;
+  onSetServerType: (type: InferenceServerType) => void;
 }) {
   const latest = systemHistory?.[systemHistory.length - 1];
   const latestGpu = gpuHistory?.[gpuHistory.length - 1];
@@ -745,7 +1060,7 @@ function SettingsPage({
           <RequirementRow name="npm 9+" required desc="Bundled with Node.js" />
           <RequirementRow name="Ollama or LM Studio" desc="For running LLM benchmarks locally" />
           <RequirementRow name="NVIDIA GPU + drivers" desc="For GPU metrics via nvidia-smi" />
-          <RequirementRow name="PostgreSQL" desc="Set DATABASE_URL for benchmark persistence" />
+          <RequirementRow name="SQLite" desc="Default database — zero config, auto-created" />
         </div>
       </div>
 

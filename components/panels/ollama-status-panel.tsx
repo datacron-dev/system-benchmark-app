@@ -1,10 +1,10 @@
 'use client';
 
 import { Server, Layers } from 'lucide-react';
-import type { OllamaStatus } from '@/lib/types';
+import type { InferenceServerStatus } from '@/lib/types';
 
 interface Props {
-  status: OllamaStatus;
+  status: InferenceServerStatus;
 }
 
 export default function OllamaStatusPanel({ status }: Props) {

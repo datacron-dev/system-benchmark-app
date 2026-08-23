@@ -13,14 +13,16 @@ export async function GET() {
       select: { tsTotal: true, ttfr: true, peakTs: true },
     });
 
-    const avgTsTotal = completedRuns?.length > 0
-      ? completedRuns.reduce((s: number, r: any) => s + (r?.tsTotal ?? 0), 0) / completedRuns.length
+    const validRuns = completedRuns?.filter((r: any) => r?.tsTotal != null && r?.tsTotal > 0) ?? [];
+    const avgTsTotal = validRuns?.length > 0
+      ? validRuns.reduce((s: number, r: any) => s + (r?.tsTotal ?? 0), 0) / validRuns.length
       : 0;
     const avgTtfr = completedRuns?.length > 0
       ? completedRuns.reduce((s: number, r: any) => s + (r?.ttfr ?? 0), 0) / completedRuns.length
       : 0;
-    const bestPeakTs = completedRuns?.length > 0
-      ? Math.max(...completedRuns.map((r: any) => r?.peakTs ?? 0))
+    const validPeakRuns = completedRuns?.filter((r: any) => r?.peakTs != null) ?? [];
+    const bestPeakTs = validPeakRuns?.length > 0
+      ? Math.max(...validPeakRuns.map((r: any) => r?.peakTs ?? 0))
       : 0;
 
     const models = await prisma.benchmarkRun.groupBy({

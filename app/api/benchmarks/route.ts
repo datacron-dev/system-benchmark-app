@@ -59,6 +59,7 @@ export async function POST(request: Request) {
         duration: body?.duration ?? null,
         logOutput: body?.logOutput ?? null,
         notes: body?.notes ?? null,
+        serverType: body?.serverType ?? null,
       },
     });
 

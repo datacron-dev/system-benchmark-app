@@ -44,7 +44,10 @@ export default function BenchmarkRunnerPanel({ models, running, logLines, onRun,
   };
 
   const handleRun = () => {
-    onRun?.({ model: model || (models ?? [])?.[0] || 'llama3.1:8b', pp, tg, concurrency, runs });
+    const rawModel = model || (models ?? [])?.[0] || 'llama3.1:8b';
+    // Strip [Ollama] / [LM Studio] prefix — the runner picks the server via serverType state
+    const modelName = rawModel.replace(/^\[(?:Ollama|LM Studio)\]\s*/, '');
+    onRun?.({ model: modelName, pp, tg, concurrency, runs });
   };
 
   return (

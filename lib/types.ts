@@ -45,6 +45,20 @@ export interface InferenceServerStatus {
   availableModels: string[];
 }
 
+export interface ServerStatusEntry {
+  server: InferenceServerType;
+  running: boolean;
+  loadedModel: string | null;
+  processor: string | null;
+  vramUsed: string | null;
+  availableModels: string[];
+}
+
+export interface InferenceServersStatus {
+  servers: ServerStatusEntry[];
+  availableModels: string[];
+}
+
 export interface BenchmarkParams {
   model: string;
   pp: number;

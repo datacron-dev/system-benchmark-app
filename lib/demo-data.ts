@@ -13,10 +13,17 @@ export function generateGpuMetrics(prev?: GpuMetrics): GpuMetrics {
     timestamp: Date.now(),
   };
 
+  const isGb10 = base.systemInfo?.gb10;
+  const unifiedTotalGB = base.systemInfo?.unifiedMemoryTotalGB ?? 144;
+
   return {
     utilization: clamp(base.utilization + randomWalk(5), 10, 98),
-    vramUsed: clamp(base.vramUsed + randomWalk(200), 4000, 15000),
-    vramTotal: 16384,
+    vramUsed: isGb10
+      ? 0
+      : clamp(base.vramUsed + randomWalk(200), 4000, 15000),
+    vramTotal: isGb10
+      ? 0
+      : 16384,
     powerDraw: clamp(base.powerDraw + randomWalk(10), 60, 250),
     temperature: clamp(base.temperature + randomWalk(2), 40, 88),
     clockSpeed: clamp(base.clockSpeed + randomWalk(50), 1200, 2400),
@@ -25,12 +32,12 @@ export function generateGpuMetrics(prev?: GpuMetrics): GpuMetrics {
     systemInfo: {
       dgxOs: false,
       dgxOsVersion: null,
-      gb10: false,
-      unifiedMemory: false,
-      unifiedMemoryTotalGB: null,
+      gb10: isGb10 ?? false,
+      unifiedMemory: isGb10 ?? true,
+      unifiedMemoryTotalGB: isGb10 ? unifiedTotalGB : null,
       nvlinkCount: 0,
       nvSwitchCount: 0,
-      gpuName: null,
+      gpuName: isGb10 ? 'NVIDIA GB10' : base.gpuName ?? null,
     },
   };
 }
@@ -38,18 +45,18 @@ export function generateGpuMetrics(prev?: GpuMetrics): GpuMetrics {
 export function generateSystemMetrics(prev?: SystemMetrics): SystemMetrics {
   const base = prev ?? {
     cpuPercent: 25,
-    ramUsed: 24,
-    ramTotal: 64,
-    ramPercent: 37.5,
+    ramUsed: 48,
+    ramTotal: 144,
+    ramPercent: 33.3,
     timestamp: Date.now(),
   };
 
-  const ramUsed = clamp(base.ramUsed + randomWalk(1), 12, 58);
+  const ramUsed = clamp(base.ramUsed + randomWalk(2), 20, 130);
   return {
     cpuPercent: clamp(base.cpuPercent + randomWalk(8), 5, 95),
     ramUsed: Math.round(ramUsed * 10) / 10,
-    ramTotal: 64,
-    ramPercent: Math.round((ramUsed / 64) * 1000) / 10,
+    ramTotal: base.ramTotal,
+    ramPercent: Math.round((ramUsed / base.ramTotal) * 1000) / 10,
     timestamp: Date.now(),
   };
 }

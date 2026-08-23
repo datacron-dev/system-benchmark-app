@@ -177,6 +177,22 @@ export async function GET() {
       });
     }
 
+    // On GB10 Grace Blackwell, nvidia-smi reports memory as "Not Supported"
+    // because memory is unified (GPU + CPU share the same pool).
+    // Fall back to unified memory info for VRAM display.
+    if (systemInfo?.gb10 && systemInfo?.unifiedMemoryTotalGB) {
+      const unifiedMiB = Math.round(systemInfo.unifiedMemoryTotalGB * 1024);
+      // nvidia-smi may have returned 0 for memory; use unified memory as total
+      const vramTotal = data.vramTotal > 0 ? data.vramTotal : unifiedMiB;
+      const vramUsed = data.vramUsed > 0 ? data.vramUsed : 0;
+      return NextResponse.json({
+        ...data,
+        vramTotal,
+        vramUsed,
+        systemInfo,
+      });
+    }
+
     return NextResponse.json({
       ...data,
       systemInfo,

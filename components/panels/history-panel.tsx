@@ -84,6 +84,7 @@ export default function HistoryPanel({ benchmarks, onRefresh }: Props) {
                 <th className="px-4 py-3 text-center text-[11px] uppercase tracking-wider text-[#8B8FA3] font-medium">Conc.</th>
                 <th className="px-4 py-3 text-center text-[11px] uppercase tracking-wider text-[#00FFD1] font-medium">t/s Total</th>
                 <th className="px-4 py-3 text-center text-[11px] uppercase tracking-wider text-[#9D5CFF] font-medium">TTFR (ms)</th>
+                <th className="px-4 py-3 text-center text-[11px] uppercase tracking-wider text-[#8B8FA3] font-medium">Target</th>
                 <th className="px-4 py-3 text-center text-[11px] uppercase tracking-wider text-[#8B8FA3] font-medium">Status</th>
                 <th className="px-4 py-3 text-center text-[11px] uppercase tracking-wider text-[#8B8FA3] font-medium">Actions</th>
               </tr>
@@ -91,7 +92,7 @@ export default function HistoryPanel({ benchmarks, onRefresh }: Props) {
             <tbody>
               {filtered?.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center text-[#3A3D55]">
+                  <td colSpan={10} className="px-4 py-12 text-center text-[#3A3D55]">
                     <History className="w-8 h-8 mx-auto mb-2" />
                     <p>No benchmark history found</p>
                     <p className="text-xs mt-1">Run benchmarks to see them here</p>
@@ -108,10 +109,13 @@ export default function HistoryPanel({ benchmarks, onRefresh }: Props) {
                     <td className="px-4 py-3 text-center text-xs text-white">{b?.tg ?? '-'}</td>
                     <td className="px-4 py-3 text-center text-xs text-white">{b?.concurrency ?? '-'}</td>
                     <td className="px-4 py-3 text-center text-xs font-bold text-[#00FFD1] terminal-font">
-                      {b?.tsTotal != null ? b.tsTotal.toFixed(1) : '-'}
+                      {b?.tsTotal != null && !isNaN(b.tsTotal) ? b.tsTotal.toFixed(1) : '-'}
                     </td>
                     <td className="px-4 py-3 text-center text-xs text-[#9D5CFF] terminal-font">
-                      {b?.ttfr != null ? b.ttfr.toFixed(1) : '-'}
+                      {b?.ttfr != null && !isNaN(b.ttfr) ? b.ttfr.toFixed(1) : '-'}
+                    </td>
+                    <td className="px-4 py-3 text-center text-xs text-[#60B5FF] terminal-font">
+                      {(b?.serverType ?? 'lmstudio').charAt(0).toUpperCase() + (b?.serverType ?? 'lmstudio').slice(1)}
                     </td>
                     <td className="px-4 py-3 text-center">
                       <span className={`px-2 py-0.5 rounded text-[11px] font-medium ${
